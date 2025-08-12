@@ -3,7 +3,7 @@
 #include "Export.h"
 
 namespace uds {
-	class UDS_DLL_EXPORT Timer
+	class LIBUDS_DLL_EXPORT Timer
 	{
 	public:
 		Timer();

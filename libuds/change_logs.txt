@@ -1,4 +1,12 @@
+2025.8.12 版本:1.0.0.9
+1.适配CANFD.
+2.修改枚举命名规则.
+
 2025.4.21 版本:1.0.0.8
+1.增加VehicleType枚举VT_CHANGAN_J90A_AICS.
+2.增加VehicleType枚举VT_CHANGAN_J90K_AICS.
+3.增加VehicleType枚举VT_CHANGAN_D587_AICS.
+4.增加VehicleType枚举VT_CHANGAN_CD701G_AICS.
 5.增加接口startTesterPresent.
 6.增加接口stopTesterPresent.
 7.修改接口setTimeout为setRecvTimeout.
@@ -7,9 +15,17 @@
 1.适配can.dll版本1.0.0.9.
 
 2025.1.10 版本:1.0.0.6
-1.增加接口inputOutputControlByIdentifier.
-2.修复Buffer赋值构造内存泄漏的bug.
-3.增加Buffer移动构造,赋值移动构造.
+1.增加VehicleType枚举VT_CHANGAN_C236_AICS.
+2.增加VehicleType枚举VT_CHANGAN_C385_AICS.
+3.增加VehicleType枚举VT_CHANGAN_C673_AICS.
+4.增加VehicleType枚举VT_CHANGAN_C798_AICS.
+5.增加VehicleType枚举VT_CHANGAN_C857_AICS,
+6.增加VehicleType枚举VT_CHANGAN_C928_AICS,
+7.增加VehicleType枚举VT_CHANGAN_E11_AICS.
+8.增加VehicleType枚举VT_CHANGAN_E12_AICS.
+9.增加接口inputOutputControlByIdentifier.
+10.修复Buffer赋值构造内存泄漏的bug.
+11.增加Buffer移动构造,赋值移动构造.
 
 2024.6.28 版本:1.0.0.5
 1.增加长安C2L项目安全解锁算法.
@@ -21,7 +37,7 @@
 1.更改编码为gb2312.
 
 2024.6.20 版本:1.0.0.2
-1.纵目提供的J3_Security.dll合并到cpp文件中,调用时将会写入到%temp%\seed2_key.dll,通过GetProcAddress调用.
+1.纵目提供的J3_Security.dll合并到cpp文件中,调用时将会写入到%temp%\c2l_seed2_key.dll,通过GetProcAddress调用.
 
 2024.6.14 版本:1.0.0.1
 1.项目开发完成.

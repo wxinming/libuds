@@ -2,10 +2,10 @@
 #include "Base.h"
 
 namespace uds {
-	class UDS_DLL_EXPORT Sgmw201sAvm : public Base
+	class LIBUDS_DLL_EXPORT Sgmw201sAvm : public Base
 	{
 	public:
-		Sgmw201sAvm(std::shared_ptr<can::Base> base, int channel, int proto, int dlc);
+		Sgmw201sAvm(std::shared_ptr<can::Base> base, int channel, can::ProtoType proto);
 		~Sgmw201sAvm();
 
 	private:

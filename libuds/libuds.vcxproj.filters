@@ -39,6 +39,9 @@
     <ClInclude Include="misc\Vehicle.h">
       <Filter>头文件\misc</Filter>
     </ClInclude>
+    <ClInclude Include="resource.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="libuds.cpp">
@@ -59,5 +62,10 @@
   </ItemGroup>
   <ItemGroup>
     <Text Include="change_logs.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="libuds.rc">
+      <Filter>资源文件</Filter>
+    </ResourceCompile>
   </ItemGroup>
 </Project>

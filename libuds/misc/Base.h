@@ -2,33 +2,32 @@
 #include "Type.h"
 #include "../../../libcan/libcan/libcan.h"
 #ifdef _WIN64
-	#ifdef _DEBUG
-		#pragma comment(lib, "../libcan/x64/Debug/libcand.lib")
-	#else
-		#pragma comment(lib, "../libcan/x64/Release/libcan.lib")
-	#endif
+#ifdef _DEBUG
+#pragma comment(lib, "../libcan/x64/Debug/libcand.lib")
 #else
-	#ifdef _DEBUG
-		#pragma comment(lib, "../libcan/Win32/Debug/libcand.lib")
-	#else
-		#pragma comment(lib, "../libcan/Win32/Release/libcan.lib")
-	#endif
+#pragma comment(lib, "../libcan/x64/Release/libcan.lib")
+#endif
+#else
+#ifdef _DEBUG
+#pragma comment(lib, "../libcan/Win32/Debug/libcand.lib")
+#else
+#pragma comment(lib, "../libcan/Win32/Release/libcan.lib")
+#endif
 #endif
 
 namespace uds {
-	class UDS_DLL_EXPORT Base 
+	class LIBUDS_DLL_EXPORT Base 
 	{
 	public:
 		/*
 		* @brief 构造
 		* @param[in] base can卡类型
 		* @param[in] channel can卡通道
-		* @param[in] prot 协议类型
-		* @param[in] dlc 数据长度代码
+		* @param[in] proto 协议类型
 		* @param[in] cid 通讯id
 		* @param[in] callback 获取key回调可以为nullptr
 		*/
-		Base(std::shared_ptr<can::Base> base, int channel = 0, int prot = can::PT_CAN, int dlc = 8, CommunicationId cid = { 0 }, GetKeyCallback callback = nullptr);
+		Base(std::shared_ptr<can::Base> base, int channel = 0, can::ProtoType proto = can::ProtoType::CAN, CommunicationId cid = { 0 }, GetKeyCallback callback = nullptr);
 
 		/*
 		* @brief 析构
@@ -195,7 +194,7 @@ namespace uds {
 
 		/*
 		* @brief 传输数据
-		* @param[in] blockSequenceCounter 块序列计数器
+		* @param[in] blockSequenceCounter 块序列计数器,需要注意是从1开始
 		* @param[in] data 数据
 		* @param[in] size 大小
 		* @return bool
@@ -233,6 +232,13 @@ namespace uds {
 		void stopTesterPresent();
 
 		/*
+		* @brief 设置发送超时时间
+		* @param[in] timeout 超时时间
+		* @return void
+		*/
+		void setSendTimeout(int timeout);
+
+		/*
 		* @brief 设置接收超时时间
 		* @param[in] timeout 超时时间
 		* @return void
@@ -254,29 +260,32 @@ namespace uds {
 		* @param[in] size 大小
 		* @return bool
 		*/
-		bool sendSf(const uint8_t* data, size_t size);
+		bool sendSingleFrame(const uint8_t* data, size_t size);
 
 		/*
 		* @brief 发送首帧
 		* @param[in] data 数据
 		* @param[in] size 大小
+		* @param[out] sent 已发送大小
 		* @return bool
 		*/
-		bool sendFf(const uint8_t* data, size_t size);
+		bool sendFirstFrame(const uint8_t* data, size_t size, size_t* sent);
 
 		/*
 		* @brief 发送连续帧
-		* @param[in] data 数据
 		* @param[in] sn 连续帧序号
+		* @param[in] data 数据
+		* @param[in] size 大小
+		* @param[out] sent 已发送大小
 		* @return bool
 		*/
-		bool sendCf(const uint8_t* data, size_t sn);
+		bool sendConsecutiveFrame(size_t sn, const uint8_t* data, size_t size, size_t* sent);
 
 		/*
 		* @brief 发送流控帧
 		* @return bool
 		*/
-		bool sendFc();
+		bool sendFlowControl();
 
 		/*
 		* @brief 接收
@@ -293,7 +302,7 @@ namespace uds {
 		* @param[out] stMin 最小连续帧间隔
 		* @return bool
 		*/
-		bool recvFc(int* fcStatus, int* blockSize, int* stMin);
+		bool recvFlowControl(int* fcStatus, int* blockSize, int* stMin);
 
 		/*
 		* @brief 设置最终错误
@@ -302,6 +311,14 @@ namespace uds {
 		* @return void
 		*/
 		void setLastError(const char* fmt, ...);
+
+		/*
+		* @brief 获取帧数据长度代码
+		* @param[in] type 类型
+		* @param[in] length 实际长度
+		* @return 数据长度代码
+		*/
+		size_t getFrameDlc(FrameType type, size_t length) const;
 
 	private:
 		/*
@@ -384,14 +401,14 @@ namespace uds {
 		//数据长度代码
 		int m_dlc = 8;
 
+		//发送超时时间
+		int m_sendTimeout = 5000;
+
 		//接收超时时间
 		int m_recvTimeout = 5000;
 
 		//帧长度
-		uds::FrameLength m_frameLen;
-
-		//定时器
-		uds::Timer m_timer;
+		//uds::FrameLength m_frameLen;
 
 		//缓冲区
 		uds::Buffer m_buffer;
@@ -400,7 +417,7 @@ namespace uds {
 		size_t m_maxNumberOfBlockLength = 0;
 
 		//诊断会话类型
-		uint8_t m_diagnosticSessionType = uds::DST_DEFAULT;
+		uint8_t m_diagnosticSessionType = DiagnosticSessionType::DEFAULT;
 
 		//获取key回调
 		GetKeyCallback m_getKeyCb = nullptr;

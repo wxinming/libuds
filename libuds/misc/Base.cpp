@@ -7,19 +7,17 @@
 #define UDS_PRINTF
 #endif
 
-uds::Base::Base(std::shared_ptr<can::Base> base, int channel, int prot, int dlc, 
-	CommunicationId cid, GetKeyCallback callback)
+uds::Base::Base(std::shared_ptr<can::Base> base, int channel, can::ProtoType proto, CommunicationId cid, GetKeyCallback callback)
 	:m_can(base)
 {
 	m_cid = cid;
 	m_getKeyCb = callback;
 	m_channel = channel;
-	m_dlc = dlc;
-	m_proto = static_cast<can::ProtoType>(prot);
-	m_frameLen.singleFrame = dlc > 8 ? 6 : 7;
-	m_frameLen.firstFrame = dlc > 8 ? (dlc - 6) : (dlc - 2);
-	m_frameLen.consecutiveFrame = dlc - 1;
-	m_frameLen.flowControlFrame = dlc - 3;
+	m_proto = proto;
+	//m_frameLen.singleFrame = m_dlc > 8 ? 6 : 7;
+	//m_frameLen.firstFrame = m_dlc > 8 ? (m_dlc - 6) : (m_dlc - 2);
+	//m_frameLen.consecutiveFrame = m_dlc - 1;
+	//m_frameLen.flowControlFrame = m_dlc - 3;
 	m_future.tester = std::async(&uds::Base::onTesterPresent, this);
 }
 
@@ -129,7 +127,7 @@ bool uds::Base::ecuReset(uint8_t resetType)
 		}
 
 		if (0x51 == data[0] && resetType == data[1]) {
-			if (resetType == RET_ENABLE_RAPID_POWER_SHUTDOWN) {
+			if (resetType == RsetEcuType::ENABLE_RAPID_POWER_SHUTDOWN) {
 				auto powerDownTime = data[2];
 				if (powerDownTime == 0xff) {
 					setLastError("ECU not support enable rapid power shutdown");
@@ -320,8 +318,8 @@ bool uds::Base::communicationControl(uint8_t controlType, uint8_t communicationT
 		data[2] = communicationType;
 
 		size_t offset = 0;
-		if (controlType == uds::CCT_ENABLE_RX_AND_DISABLE_TX_WITH_ENHANCED_ADDRESS_INFORMATION ||
-			controlType == uds::CCT_ENABLE_RX_AND_TX_WITH_ENHANCED_ADDRESS_INFORMATION) {
+		if (controlType == CommunicationControlType::ENABLE_RX_AND_DISABLE_TX_WITH_ENHANCED_ADDRESS_INFORMATION ||
+			controlType == CommunicationControlType::ENABLE_RX_AND_TX_WITH_ENHANCED_ADDRESS_INFORMATION) {
 			data[3] = (nodeIdentificationNumber >> 8) & 0xff;
 			data[4] = (nodeIdentificationNumber >> 0) & 0xff;
 			offset = 2;
@@ -1190,6 +1188,11 @@ void uds::Base::stopTesterPresent()
 	m_testerPresentStart = false;
 }
 
+void uds::Base::setSendTimeout(int timeout)
+{
+	m_sendTimeout = timeout;
+}
+
 void uds::Base::setRecvTimeout(int timeout)
 {
 	m_recvTimeout = timeout;
@@ -1201,92 +1204,108 @@ bool uds::Base::send(const uint8_t* data, size_t size)
 	do
 	{
 		copyToBuffer(0, data, size);
-		auto status = CS_WAITTING_START;
-		auto sn = 1, fcStatus = 0, blockSize = 0, stMin = 0;
+		auto status = CommunicationStatus::WAITTING_START;
+		auto sn = 1, fcStatus = 0, blockSize = 0, stMin = 0, maxSfl = 0;
+		auto msSleep = true;
+		size_t sent = 0;
+		Timer timer;
+		timer.getStartTime();
 		do
 		{
 			switch (status)
 			{
-			case CS_WAITTING_START:
-				if (size <= m_frameLen.singleFrame && size > 0) {
-					status = CS_SEND_SF;
-				}
-				else if (size > 0 && size < UDS_BUFFER_SIZE) {
-					status = CS_SEND_FF;
-				}
-				else {
-					status = CS_FINISH;
+			case CommunicationStatus::WAITTING_START:
+				if (size == 0) {
 					success = false;
+					setLastError("发送诊断报文大小错误");
+					break;
 				}
+
+				maxSfl = (m_proto == can::CAN)
+					? UDS_CAN_MAX_SINGLE_FRAME_LENGTH
+					: UDS_CANFD_MAX_SINGLE_FRAME_LENGTH;
+
+				status = (size > 0 && size <= maxSfl)
+					? CommunicationStatus::SEND_SINGLE_FRAME
+					: CommunicationStatus::SEND_FIRST_FRAME;
+
 				break;
 
 				//发送单帧
-			case CS_SEND_SF:
-				if (sendSf(data, size)) {
+			case CommunicationStatus::SEND_SINGLE_FRAME:
+				if (sendSingleFrame(data, size)) {
 					success = true;
-					status = CS_FINISH;
 				}
 				else {
 					setLastError("发送单帧失败");
-					status = CS_FINISH;
 					success = false;
 				}
+				status = CommunicationStatus::FINISH;
 				break;
 
 				//发送首帧
-			case CS_SEND_FF:
-				if (sendFf(data, size)) {
-					data += m_frameLen.firstFrame;
-					size -= m_frameLen.firstFrame;
-					status = CS_RECV_FC;
+			case CommunicationStatus::SEND_FIRST_FRAME:
+				if (sendFirstFrame(data, size, &sent)) {
+					data += sent;
+					size -= sent;
+					status = CommunicationStatus::RECV_FLOW_CONTROL;
 				}
 				else {
 					setLastError("发送首帧失败");
-					status = CS_FINISH;
+					status = CommunicationStatus::FINISH;
 					success = false;
 				}
 				break;
 
 				//发送连续帧
-			case CS_SEND_CF:
+			case CommunicationStatus::SEND_CONSECUTIVE_FRAME:
 				if (blockSize > 0) {
-					if (sendCf(data, sn)) {
-						data += m_frameLen.consecutiveFrame;
-						size -= m_frameLen.consecutiveFrame;
+					UDS_PRINTF("before remaining size %lu,%d, sent %lu\n", size, (int)size, sent);
+					if (sendConsecutiveFrame(sn, data, size, &sent)) {
+						data += sent;
+						size -= sent;
+						UDS_PRINTF("after remaining size %lu,%d, sent %lu\n", size, (int)size, sent);
 						if ((int)size <= 0) {
 							success = true;
-							status = CS_FINISH;
+							status = CommunicationStatus::FINISH;
+							UDS_PRINTF("size<=0 condition establishment!\n");
 						}
 						++sn;
 						--blockSize;
+						if (msSleep) {
+							std::this_thread::sleep_for(std::chrono::milliseconds(stMin));
+						}
+						else {
+							std::this_thread::sleep_for(std::chrono::microseconds(stMin));
+						}
 					}
 					else {
 						setLastError("发送连续帧失败");
-						status = CS_FINISH;
+						status = CommunicationStatus::FINISH;
 						success = false;
 					}
 				}
 				else {
-					status = CS_RECV_FC;
+					status = CommunicationStatus::RECV_FLOW_CONTROL;
 				}
 				break;
 
-			case CS_SEND_FC:
-			case CS_RECV_SF:
-			case CS_RECV_FF:
-			case CS_RECV_CF:
+			case CommunicationStatus::SEND_FLOW_CONTROL:
+			case CommunicationStatus::RECV_SINGLE_FRAME:
+			case CommunicationStatus::RECV_FIRST_FRAME:
+			case CommunicationStatus::RECV_CONSECUTIVE_FRAME:
 				setLastError("发送诊断逻辑错误");
-				status = CS_FINISH;
+				status = CommunicationStatus::FINISH;
 				success = false;
 				break;
 
 				//接收流控帧
-			case CS_RECV_FC:
-				if (recvFc(&fcStatus, &blockSize, &stMin)) {
+			case CommunicationStatus::RECV_FLOW_CONTROL:
+				if (recvFlowControl(&fcStatus, &blockSize, &stMin)) {
 					auto overflow = false;
 					switch (fcStatus)
 					{
-					case uds::FS_CONTINUE_TO_SEND:
+					case FlowStatus::CONTINUE_TO_SEND:
 						/*
 						* @brief blockSize
 						* 0x00 -> 接收方向发送端告知: 接收端后续将不会再发送流控帧响应，发送端也不需要等待流控帧，发送端直接发送余下的连接帧数据；
@@ -1294,33 +1313,38 @@ bool uds::Base::send(const uint8_t* data, size_t size)
 						*/
 						if (blockSize == 0) {
 							blockSize = 0xff;
-							status = CS_SEND_CF;
+							status = CommunicationStatus::SEND_CONSECUTIVE_FRAME;
 						}
 						else if (blockSize > 0) {
-							status = CS_SEND_CF;
+							status = CommunicationStatus::SEND_CONSECUTIVE_FRAME;
 						}
 
-						//微秒
-						if ((stMin & 0xf0) == 0xf0 &&
-							(stMin & 0x0f) != 0x00) {
-							if ((stMin & 0x0f) >= 0x01 &&
-								(stMin & 0x0f) <= 0x09) {
-								stMin &= 0x0f;
-								stMin *= 100;
-								stMin /= 1000;//精度不够
-							}
-							else {
-								//预留
-							}
+						/*
+						* STmin 的单位
+						* 当 0x00～0x7F 时 → 单位是 毫秒，直接等于这个数值
+						* 例如 0x14 = 20 毫秒
+						* 当 0xF1～0xF9 时 → 单位是 100 微秒 的倍数
+						* 例如 0xF1 = 100 μs，0xF9 = 900 μs
+						* 0x80～0xF0 是保留值（不要使用）
+						*/
+						if (stMin >= 0x00 && stMin <= 0x7f) {
+							UDS_PRINTF("sleep milliseconds %d\n", stMin);
+							msSleep = true;
+						}
+						else if (stMin >= 0xf1 && stMin <= 0xf9) {
+							stMin &= 0x0f;
+							stMin *= 100;
+							UDS_PRINTF("sleep microseconds %d\n", stMin);
+							msSleep = false;
 						}
 						else if (stMin >= 0x80 && stMin <= 0xf0) {
 							//预留
 						}
 						break;
-					case uds::FS_WAITTING:
+					case FlowStatus::WAITTING:
 						//等待
 						break;
-					case uds::FS_OVERFLOW:
+					case FlowStatus::OVERFLOWS:
 						overflow = true;
 						break;
 					default:
@@ -1328,32 +1352,30 @@ bool uds::Base::send(const uint8_t* data, size_t size)
 					}
 
 					if (overflow) {
-						status = CS_FINISH;
+						status = CommunicationStatus::FINISH;
 						success = false;
 						setLastError("接收流控帧溢出");
 					}
 				}
 				else {
-					status = CS_FINISH;
+					status = CommunicationStatus::FINISH;
 					success = false;
 					setLastError("接收流控帧失败");
 				}
 				break;
 
 			default:
-				status = CS_FINISH;
+				status = CommunicationStatus::FINISH;
 				success = false;
 				break;
 			}
 
-			m_timer.getStartTime();
-			while (true)
-			{
-				if (m_timer.getEndTime() > stMin) {
-					break;
-				}
+			if (timer.getEndTime() > m_sendTimeout) {
+				success = false;
+				setLastError("发送诊断报文超时");
+				break;
 			}
-		} while (CS_FINISH != status);
+		} while (CommunicationStatus::FINISH != status);
 
 		if (!success) {
 			break;
@@ -1363,29 +1385,28 @@ bool uds::Base::send(const uint8_t* data, size_t size)
 	return result;
 }
 
-bool uds::Base::sendSf(const uint8_t* data, size_t size)
+bool uds::Base::sendSingleFrame(const uint8_t* data, size_t size)
 {
 	bool result = false;
 	do
 	{
 		can::Msg msg;
 		msg.id = getRequestId();
-		msg.dlc = m_dlc;
+		msg.dlc = getFrameDlc(FrameType::SINGLE_FRAME, size);
 		msg.protoType = m_proto;
-		if (m_dlc > 8) { //CANFD
-			if (size > m_dlc - 2) {
+		memset(msg.data, 0xcc, CAN_MAX_MSG_DATA_SIZE);
+
+		if (msg.dlc <= 8) {
+			msg.data[0] = ((FrameType::SINGLE_FRAME << 4) | (size & 0x0f));
+			memcpy(&msg.data[1], data, size);
+		}
+		else { 
+			if (msg.protoType != can::CANFD) {
 				break;
 			}
-			msg.data[0] = (FT_SF << 4);
+			msg.data[0] = (FrameType::SINGLE_FRAME << 4);
 			msg.data[1] = (size & 0xff);
 			memcpy(&msg.data[2], data, size);
-		}
-		else { //CAN
-			if (size > m_dlc - 1) {
-				break;
-			}
-			msg.data[0] = ((FT_SF << 4) | (size & 0x0f));
-			memcpy(&msg.data[1], data, size);
 		}
 
 		if (!m_can->sendMsg(&msg, 1, m_channel)) {
@@ -1396,28 +1417,31 @@ bool uds::Base::sendSf(const uint8_t* data, size_t size)
 	return result;
 }
 
-bool uds::Base::sendFf(const uint8_t* data, size_t size)
+bool uds::Base::sendFirstFrame(const uint8_t* data, size_t size, size_t* sent)
 {
 	bool result = false;
 	do
 	{
 		can::Msg msg;
 		msg.id = getRequestId();
-		msg.dlc = m_dlc;
+		msg.dlc = getFrameDlc(FrameType::FIRST_FRAME, size);
 		msg.protoType = m_proto;
-		if (size > 4096) { //CANFD
-			msg.data[0] = (FT_FF << 4);
+		memset(msg.data, 0xcc, CAN_MAX_MSG_DATA_SIZE);
+		if (size <= 4095) {
+			msg.data[0] = ((FrameType::FIRST_FRAME << 4) | ((size >> 8) & 0x0f));
+			msg.data[1] = size & 0xff;
+			*sent = size > msg.dlc - 2 ? msg.dlc - 2 : size;
+			memcpy(&msg.data[2], data, *sent);
+		}
+		else { 
+			msg.data[0] = (FrameType::FIRST_FRAME << 4);
 			msg.data[1] = 0x00;
 			msg.data[2] = ((size >> 24) & 0xff);
 			msg.data[3] = ((size >> 16) & 0xff);
 			msg.data[4] = ((size >> 8) & 0xff);
 			msg.data[5] = ((size >> 0) & 0xff);
-			memcpy(&msg.data[6], data, m_frameLen.firstFrame);
-		}
-		else { //CAN
-			msg.data[0] = ((FT_FF << 4) | ((size >> 8) & 0x0f));
-			msg.data[1] = size & 0xff;
-			memcpy(&msg.data[2], data, m_frameLen.firstFrame);
+			*sent = size > msg.dlc - 6 ? msg.dlc - 6 : size;
+			memcpy(&msg.data[6], data, *sent);
 		}
 
 		if (!m_can->sendMsg(&msg, 1, m_channel)) {
@@ -1429,17 +1453,19 @@ bool uds::Base::sendFf(const uint8_t* data, size_t size)
 	return result;
 }
 
-bool uds::Base::sendCf(const uint8_t* data, size_t sn)
+bool uds::Base::sendConsecutiveFrame(size_t sn, const uint8_t* data, size_t size, size_t* sent)
 {
 	bool result = false;
 	do
 	{
 		can::Msg msg;
 		msg.id = getRequestId();
-		msg.dlc = m_dlc;
+		msg.dlc = getFrameDlc(FrameType::CONSECUTIVE_FRAME, size);
 		msg.protoType = m_proto;
-		msg.data[0] = ((FT_CF << 4) | ((sn % 16) & 0x0f));
-		memcpy(&msg.data[1], data, m_frameLen.consecutiveFrame);
+		memset(msg.data, 0xcc, CAN_MAX_MSG_DATA_SIZE);
+		msg.data[0] = ((FrameType::CONSECUTIVE_FRAME << 4) | ((sn % 16) & 0x0f));
+		*sent = size > msg.dlc - 1 ? msg.dlc - 1 : size;
+		memcpy(&msg.data[1], data, *sent);
 		if (!m_can->sendMsg(&msg, 1, m_channel)) {
 			break;
 		}
@@ -1449,7 +1475,7 @@ bool uds::Base::sendCf(const uint8_t* data, size_t sn)
 	return result;
 }
 
-bool uds::Base::sendFc()
+bool uds::Base::sendFlowControl()
 {
 	bool result = false;
 	do
@@ -1458,7 +1484,8 @@ bool uds::Base::sendFc()
 		msg.id = getRequestId();
 		msg.dlc = m_dlc;
 		msg.protoType = m_proto;
-		msg.data[0] = ((FT_FC << 4) | (0 & 0x0f));
+		memset(msg.data, 0xcc, CAN_MAX_MSG_DATA_SIZE);
+		msg.data[0] = ((FrameType::FLOW_CONTROL << 4) | (0 & 0x0f));
 		msg.data[1] = 0xff;
 		msg.data[2] = 0x00;
 
@@ -1476,7 +1503,7 @@ bool uds::Base::recv(uint8_t* data, size_t* size)
 	bool result = false, overflow = false, quit = false, timeout = false;
 	do
 	{
-		int sn = 1, blockSize = 0xff;
+		int sn = 0, blockSize = 0xff, firstFrameLen = 0, prevConsecutiveFrame = 0;
 		std::unique_ptr<can::Msg[]> msg(new can::Msg[CAN_MAX_RECV_BUFFER_SIZE]);
 
 		Timer timer;
@@ -1514,7 +1541,7 @@ bool uds::Base::recv(uint8_t* data, size_t* size)
 					auto frameType = ((msg[i].data[0] & 0xf0) >> 4);
 					switch (frameType)
 					{
-					case FT_SF:
+					case FrameType::SINGLE_FRAME:
 						UDS_PRINTF("recv single frame\n");
 						count = msg[i].data[0] & 0x0f;
 						if (count != 0) { //CAN
@@ -1537,7 +1564,7 @@ bool uds::Base::recv(uint8_t* data, size_t* size)
 						quit = true;
 						break;
 
-					case FT_FF:
+					case FrameType::FIRST_FRAME:
 						UDS_PRINTF("recv first frame\n");
 						count = ((msg[i].data[0] & 0x0f) << 8) + msg[i].data[1];
 						if (count > *size) {
@@ -1547,37 +1574,45 @@ bool uds::Base::recv(uint8_t* data, size_t* size)
 						else {
 							*size = count;
 							if (count > 0) { //CAN
-								memcpy(data, &msg[i].data[2], m_frameLen.firstFrame);
+								UDS_PRINTF("first frame CAN count %d\n", count);
+								memcpy(data, &msg[i].data[2], msg[i].dlc - 2);
+								firstFrameLen = msg[i].dlc - 2;
 							}
 							else { //CANFD
+								UDS_PRINTF("first frame CANFD count %d\n", count);
 								count = (msg[i].data[2] << 24) + (msg[i].data[3] << 16) + (msg[i].data[4] << 8) + (msg[i].data[5]);
-								memcpy(data, &msg[i].data[6], m_frameLen.firstFrame);
+								memcpy(data, &msg[i].data[6], msg[i].dlc - 6);
+								firstFrameLen = msg[i].dlc - 6;
 							}
 
-							if (!sendFc()) {
+							if (!sendFlowControl()) {
 								setLastError("发送流控帧失败");
 								quit = true;
 							}
 						}
 						break;
 
-					case FT_CF:
+					case FrameType::CONSECUTIVE_FRAME:
 						UDS_PRINTF("recv consecutive frame\n");
-						if (sn % 16 != (msg[i].data[0] & 0x0f)) {
-							setLastError("连续帧序列号错误");
+						if (++sn % 16 != (msg[i].data[0] & 0x0f)) {
+							setLastError("连续帧序号错误");
 							quit = true;
 						}
 						else {
-							auto index = m_frameLen.firstFrame + (sn - 1) * m_frameLen.consecutiveFrame;
-							memcpy(&data[index], &msg[i].data[1], m_frameLen.consecutiveFrame);
-							if ((++sn - 1) * m_frameLen.consecutiveFrame >= *size - m_frameLen.firstFrame) {
+							auto index = firstFrameLen + prevConsecutiveFrame;
+							prevConsecutiveFrame += msg[i].dlc - 1;
+							UDS_PRINTF("index:%d, prevConsecutiveFrame:%d, total:%d\n",
+								index, prevConsecutiveFrame, index + prevConsecutiveFrame);
+
+							memcpy(&data[index], &msg[i].data[1], msg[i].dlc - 1);
+							if (index + prevConsecutiveFrame >= count) {
 								quit = true;
 								UDS_PRINTF("recv consecutive frame end\n");
 							}
 							else {
 								if (--blockSize == 0) {
 									UDS_PRINTF("send flow control frame\n");
-									if (!sendFc()) {
+									if (!sendFlowControl()) {
 										setLastError("发送流控帧失败");
 										quit = true;
 									}
@@ -1587,7 +1622,7 @@ bool uds::Base::recv(uint8_t* data, size_t* size)
 						}
 						break;
 
-					case FT_FC:
+					case FrameType::FLOW_CONTROL:
 						UDS_PRINTF("recv flow control\n");
 						setLastError("接收诊断逻辑错误");
 						quit = true;
@@ -1624,13 +1659,14 @@ bool uds::Base::recv(uint8_t* data, size_t* size)
 	return result;
 }
 
-bool uds::Base::recvFc(int* fcStatus, int* blockSize, int* stMin)
+bool uds::Base::recvFlowControl(int* fcStatus, int* blockSize, int* stMin)
 {
 	bool result = false, find = false;
 	do
 	{
 		std::unique_ptr<can::Msg[]> msg(new can::Msg[CAN_MAX_RECV_BUFFER_SIZE]);
-
+		Timer timer;
+		timer.getEndTime();
 		while (true) {
 			auto size = m_can->recvMsg(msg.get(), CAN_MAX_RECV_BUFFER_SIZE, m_channel);
 			for (size_t i = 0; i < size; ++i) {
@@ -1639,7 +1675,7 @@ bool uds::Base::recvFc(int* fcStatus, int* blockSize, int* stMin)
 				}
 
 				auto frameType = ((msg[i].data[0] & 0xf0) >> 4);
-				if (frameType == FT_FC) {
+				if (frameType == FrameType::FLOW_CONTROL) {
 					*fcStatus = (msg[i].data[0] & 0x0f);
 					*blockSize = msg[i].data[1];
 					*stMin = msg[i].data[2];
@@ -1652,7 +1688,7 @@ bool uds::Base::recvFc(int* fcStatus, int* blockSize, int* stMin)
 				break;
 			}
 
-			if (m_timer.getEndTime() > 140) {
+			if (timer.getEndTime() > 140) {
 				break;
 			}
 		}
@@ -1678,6 +1714,57 @@ void uds::Base::setLastError(const char* fmt, ...)
 	m_lastError = buffer.get();
 }
 
+size_t uds::Base::getFrameDlc(FrameType type, size_t length) const
+{
+	if (m_proto == can::CAN) {
+		return 8;
+	}
+
+	using RangeMap = std::vector<std::pair<size_t, size_t>>;
+
+	auto getCanFdDlc = [](size_t len, const RangeMap& ranges) {
+		for (const auto& [maxLen, dlc] : ranges) {
+			if (len <= maxLen) {
+				return dlc;
+			}
+		}
+		return size_t(64);
+	};
+
+	static const RangeMap singleFrameRanges = {
+		{ 6, 8 }, { 10, 12 }, { 14, 16 }, { 18, 20 },
+		{ 22, 24 }, { 30, 32 }, { 46, 48 }, { 62, 64 }
+	};
+
+	static const RangeMap firstFrameShortRanges = {
+		{ 6, 8 }, { 10, 12 }, { 14, 16 }, { 18, 20 },
+		{ 22, 24 }, { 30, 32 }, { 46, 48 }, { 62, 64 }
+	};
+
+	static const RangeMap firstFrameLongRanges = {
+		{ 2, 8 }, { 6, 12 }, { 10, 16 }, { 14, 20 },
+		{ 18, 24 }, { 26, 32 }, { 42, 48 }, { 58, 64 }
+	};
+
+	static const RangeMap consecutiveFrameRanges = {
+		{ 7, 8 }, { 11, 12 }, { 15, 16 }, { 19, 20 },
+		{ 23, 24 }, { 31, 32 }, { 47, 48 }, { 63, 64 }
+	};
+
+	switch (type) {
+	case FrameType::SINGLE_FRAME:
+		return getCanFdDlc(length, singleFrameRanges);
+	case FrameType::FIRST_FRAME:
+		return getCanFdDlc(length, length <= 4095 ? firstFrameShortRanges : firstFrameLongRanges);
+	case FrameType::CONSECUTIVE_FRAME:
+		return getCanFdDlc(length, consecutiveFrameRanges);
+	default:
+		break;
+	}
+
+	return 64;
+}
+
 void uds::Base::insertErrorCode(uint8_t id0, uint8_t id1, uint8_t id2)
 {
 	char temp[32] = { 0 };
@@ -1693,7 +1780,7 @@ bool uds::Base::getKey(int level, const uint8_t* seedData, int seedSize, uint8_t
 
 int uds::Base::getRequestId() const
 {
-	return m_cid.request.mode == RM_PHYSICAL ? m_cid.request.physical : m_cid.request.function;
+	return m_cid.request.mode == RequestMode::PHYSICAL ? m_cid.request.physical : m_cid.request.function;
 }
 
 int uds::Base::getResponseId() const
@@ -1729,10 +1816,10 @@ void uds::Base::onTesterPresent()
 				startTime = endTime;
 				switch (m_diagnosticSessionType)
 				{
-				case uds::DST_DEFAULT:
+				case DiagnosticSessionType::DEFAULT:
 					break;
-				case uds::DST_PROGRAMMING:
-				case uds::DST_EXTEND:
+				case DiagnosticSessionType::PROGRAMMING:
+				case DiagnosticSessionType::EXTEND:
 					if (m_can != nullptr && m_can->isOpen()) {
 						m_can->sendMsg(&msg, 1, m_channel);
 					}
