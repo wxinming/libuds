@@ -64,6 +64,19 @@ namespace uds {
 		uds::CommunicationId getCommunicationId() const;
 
 		/*
+		* @brief 设置请求模式
+		* @param[in] mode 模式
+		* @return void
+		*/
+		void setRequestMode(uds::RequestMode mode);
+
+		/*
+		* @brief 获取请求模式
+		* @return 请求模式
+		*/
+		uds::RequestMode getRequestMode() const;
+
+		/*
 		* @brief 设置获取密钥回调
 		* @param[in] callback 回调
 		* @return void

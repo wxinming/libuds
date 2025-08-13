@@ -1,6 +1,7 @@
-2025.8.12 版本:1.0.0.9
+2025.8.13 版本:1.0.0.9
 1.适配CANFD.
 2.修改枚举命名规则.
+3.增加uds::Base增加setRequestMode,getRequestMode接口.
 
 2025.4.21 版本:1.0.0.8
 1.增加VehicleType枚举VT_CHANGAN_J90A_AICS.

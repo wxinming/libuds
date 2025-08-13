@@ -42,6 +42,16 @@ uds::CommunicationId uds::Base::getCommunicationId() const
 	return m_cid;
 }
 
+void uds::Base::setRequestMode(uds::RequestMode mode)
+{
+	m_cid.request.mode = mode;
+}
+
+uds::RequestMode uds::Base::getRequestMode() const
+{
+	return m_cid.request.mode;
+}
+
 void uds::Base::setGetKeyCallback(uds::GetKeyCallback callback)
 {
 	m_getKeyCb = callback;
