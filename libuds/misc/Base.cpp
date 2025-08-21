@@ -1611,11 +1611,12 @@ bool uds::Base::recv(uint8_t* data, size_t* size)
 						else {
 							auto index = firstFrameLen + prevConsecutiveFrame;
 							prevConsecutiveFrame += msg[i].dlc - 1;
+							auto total = firstFrameLen + prevConsecutiveFrame;
 							UDS_PRINTF("index:%d, prevConsecutiveFrame:%d, total:%d\n",
-								index, prevConsecutiveFrame, index + prevConsecutiveFrame);
+								index, prevConsecutiveFrame, total);
 
 							memcpy(&data[index], &msg[i].data[1], msg[i].dlc - 1);
-							if (index + prevConsecutiveFrame >= count) {
+							if (total >= count) {
 								quit = true;
 								UDS_PRINTF("recv consecutive frame end\n");
 							}
